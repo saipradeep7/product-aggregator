@@ -49,6 +49,7 @@ class ProductHuntScraper:
                 time.sleep(delay)
                 
                 response = requests.get(url, headers=self._get_headers(), timeout=10)
+                logging.info(f"Response status code: {response.status_code}")  # Debug log
                 
                 # Check for rate limiting response codes
                 if response.status_code in [429, 403]:
@@ -60,37 +61,93 @@ class ProductHuntScraper:
                     
                 response.raise_for_status()
                 
-                soup = BeautifulSoup(response.content, 'html.parser')
+                # Force UTF-8 encoding
+                response.encoding = 'utf-8'
+                soup = BeautifulSoup(response.text, 'html.parser')
+                
+                # Debug log for HTML content
+                logging.debug(f"HTML content length: {len(response.text)}")
+                
+                # Try multiple selector patterns for product items
+                product_items = []
+                selectors = [
+                    'div[class*="styles_item"]',  # New Product Hunt class pattern
+                    'div[class*="item_"]',        # Alternative class pattern
+                    'div[data-test="product-item"]',
+                    'article[class*="item"]',
+                    'div[class*="product-item"]'
+                ]
+                
+                for selector in selectors:
+                    product_items = soup.select(selector)
+                    if product_items:
+                        logging.info(f"Found {len(product_items)} products using selector: {selector}")
+                        break
+                
+                if not product_items:
+                    logging.warning("No product items found with any selector")
+                    # Save HTML for debugging
+                    with open('debug_output.html', 'w', encoding='utf-8') as f:
+                        f.write(soup.prettify())
+                    logging.info("Saved HTML to debug_output.html for inspection")
+                    raise Exception("Could not find product items with any selector")
+                
                 products = []
-                
-                # Find product cards on the homepage
-                product_items = soup.find_all('div', {'data-test': 'product-item'})[:5]  # Limit to top 5
-                
-                for item in product_items:
-                    name = item.find('h3').text.strip()
-                    description = item.find('div', {'data-test': 'product-description'}).text.strip()
-                    votes = item.find('span', {'data-test': 'vote-button'}).text.strip()
+                for item in product_items[:5]:
+                    try:
+                        # Updated selectors for product details
+                        name = (
+                            item.select_one('h2, h3, [class*="title"], [class*="name"]') or
+                            item.select_one('a[class*="title"], a[class*="name"]')
+                        )
+                        description = (
+                            item.select_one('div[class*="tagline"], div[class*="description"], p') or
+                            item.select_one('[class*="tagline"], [class*="description"]')
+                        )
+                        votes = (
+                            item.select_one('[class*="vote"], [class*="upvote"]') or
+                            item.select_one('button[class*="vote"]')
+                        )
+                        link_element = (
+                            item.select_one('a[href*="/posts/"]') or
+                            item.select_one('a[class*="link"]')
+                        )
+                        
+                        if not all([name, description, votes, link_element]):
+                            missing = []
+                            if not name: missing.append('name')
+                            if not description: missing.append('description')
+                            if not votes: missing.append('votes')
+                            if not link_element: missing.append('link')
+                            logging.warning(f"Missing elements: {', '.join(missing)}")
+                            continue
+                        
+                        product = {
+                            'name': name.text.strip(),
+                            'description': description.text.strip(),
+                            'votes': votes.text.strip(),
+                            'url': f"https://www.producthunt.com{link_element['href']}" if link_element['href'].startswith('/') else link_element['href'],
+                            'scraped_at': datetime.now().isoformat()
+                        }
+                        products.append(product)
+                        logging.info(f"Successfully scraped product: {product['name']}")
                     
-                    # Get the product URL
-                    link_element = item.find('a', {'data-test': 'product-name-link'})
-                    product_url = f"https://www.producthunt.com{link_element['href']}" if link_element else None
-                    
-                    product = {
-                        'name': name,
-                        'description': description,
-                        'votes': votes,
-                        'url': product_url,
-                        'scraped_at': datetime.now().isoformat()
-                    }
-                    products.append(product)
-                    logging.info(f"Scraped product: {name}")
+                    except Exception as e:
+                        logging.error(f"Error processing product item: {str(e)}")
+                        continue
                 
-                logging.info(f"Successfully scraped {len(products)} products from Product Hunt")
-                return {"status": "success", "data": products}
+                if products:
+                    logging.info(f"Successfully scraped {len(products)} products from Product Hunt")
+                    return {"status": "success", "data": products}
+                else:
+                    raise Exception("No products could be scraped")
                 
             except Exception as e:
                 logging.error(f"Error scraping Product Hunt: {str(e)}")
-                return {"status": "error", "message": str(e)}
+                retry_count += 1
+                if retry_count >= self.max_retries:
+                    return {"status": "error", "message": str(e)}
+                logging.info(f"Retrying... Attempt {retry_count + 1} of {self.max_retries}")
 
 def main():
     scraper = ProductHuntScraper()
