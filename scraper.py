@@ -22,7 +22,6 @@ class ProductHuntScraper:
         self.backoff_factor = 2
         
     def _get_headers(self):
-        # Add more headers to look more like a real browser
         return {
             'User-Agent': self.ua.random,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -35,7 +34,10 @@ class ProductHuntScraper:
             'Sec-Fetch-Mode': 'navigate',
             'Sec-Fetch-Site': 'none',
             'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0'
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache',
+            'Cookie': '',  # Some sites require cookies
+            'Referer': 'https://www.google.com/'  # Make it look like we came from Google
         }
     
     def scrape_products(self):
@@ -68,28 +70,52 @@ class ProductHuntScraper:
                 # Debug log for HTML content
                 logging.debug(f"HTML content length: {len(response.text)}")
                 
-                # Try multiple selector patterns for product items
-                product_items = []
+                # Updated selector patterns for product items
                 selectors = [
-                    'div[class*="styles_item"]',  # New Product Hunt class pattern
-                    'div[class*="item_"]',        # Alternative class pattern
+                    # New modern selectors
+                    'div[class*="component_post"]',
+                    'div[class*="component_item"]',
+                    'div[class*="feed-item"]',
+                    'div[class*="post-item"]',
+                    # Dynamic class name patterns
+                    'div[class^="styles_post"]',
+                    'div[class^="styles_item"]',
+                    # Generic content containers
+                    'div[class*="content"] > div > article',
+                    'div[class*="feed"] > div',
+                    # Legacy selectors
                     'div[data-test="product-item"]',
-                    'article[class*="item"]',
-                    'div[class*="product-item"]'
+                    'article[class*="item"]'
                 ]
                 
+                # Add debug logging for HTML structure
+                logging.debug("Page structure:")
+                for tag in soup.find_all(['div', 'article'])[:10]:
+                    logging.debug(f"Found element: {tag.name}, classes: {tag.get('class', [])}")
+                
+                product_items = []
                 for selector in selectors:
-                    product_items = soup.select(selector)
-                    if product_items:
-                        logging.info(f"Found {len(product_items)} products using selector: {selector}")
+                    items = soup.select(selector)
+                    if items:
+                        logging.info(f"Found {len(items)} products using selector: {selector}")
+                        product_items = items
                         break
                 
                 if not product_items:
                     logging.warning("No product items found with any selector")
-                    # Save HTML for debugging
+                    # Save both raw HTML and prettified version
                     with open('debug_output.html', 'w', encoding='utf-8') as f:
                         f.write(soup.prettify())
-                    logging.info("Saved HTML to debug_output.html for inspection")
+                    with open('debug_output_raw.html', 'w', encoding='utf-8') as f:
+                        f.write(response.text)
+                    logging.info("Saved HTML to debug_output.html and debug_output_raw.html for inspection")
+                    
+                    # Try to find any meaningful content
+                    main_content = soup.find('main') or soup.find('div', id='__next')
+                    if main_content:
+                        logging.debug("Main content structure:")
+                        logging.debug(main_content.prettify()[:500])  # First 500 chars
+                    
                     raise Exception("Could not find product items with any selector")
                 
                 products = []
